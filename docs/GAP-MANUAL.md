@@ -22,6 +22,18 @@ persuasif) memang tidak bisa otomatis — itu tetap pekerjaan owner. Ledger
 menyediakan bahan untuk evaluasi itu: evidence tiap `SELESAI` adalah tempat
 owner menilai.
 
+## Fitur yang ditambahkan setelah dokumen asli
+
+**Memori lintas sesi (`workflow dream`).** Pola *Memory & Dreaming* dari
+artikel Dotzlaw *"Memory and Dreaming: How Anthropic Just Shipped the Karpathy
+Wiki Pattern"* — lihat `docs/DREAM.md`. Ledger = memori episodik; `dream run`
+mengkonsolidasi ledger + journal penolakan menjadi *proposal* memori (empat
+fase: orient → gather recent signal → consolidate → prune & index) tanpa
+mengubah input; owner meninjau lalu `dream promote` ke memori aktif yang dibaca
+agen di awal sesi (`dream index`). Jadi platform yang memulai sesi baru tidak
+lagi mulai dari nol: ia membaca pelajaran dari penolakan lalu, keputusan owner
+(override/reopen), dan peta dependency — bukan menebak dari percakapan sendiri.
+
 ## Pilihan desain yang perlu diketahui pemakai
 
 | Keputusan | Alasan |

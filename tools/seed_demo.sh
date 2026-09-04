@@ -44,23 +44,23 @@ chk "4. Marketing mulai kerja" 0 "$MKT" "$W" submit \
 
 chk "5. Website mencatat dependency: butuh copy promo dulu" 0 "$WEB" "$W" depend add \
   --project checkout-redesign --depends-on marketing/promo-harbolnas \
-  --reason "halaman checkout menampilkan copy & CTA dari promo harbolnas"
+  --reason "halaman checkout menampilkan copy & CTA dari promo harbolnas" --actor platform-a
 
 chk "6. Website klaim SELESAI padahal promo belum selesai -> DITAHAN (exit 3)" 3 "$WEB" "$W" submit \
   --project checkout-redesign --status SELESAI \
   --evidence "url live: checkout.nevgo.id, screenshot terlampir" \
-  --verification "curl -I checkout.nevgo.id -> 200 OK, dicek manual"
+  --verification "curl -I checkout.nevgo.id -> 200 OK, dicek manual" --actor platform-a
 
 chk "7. Marketing selesai dengan evidence + verification (minta bantuan cc konten)" 0 "$MKT" "$W" submit \
   --project promo-harbolnas --status SELESAI \
   --evidence "landing promo live di /promo-harbolnas, hasil uji A/B lampiran" \
   --verification "curl -I nevgo.id/promo-harbolnas -> 200; dicek dua browser" \
-  --cc konten:katalog-produk
+  --cc konten:katalog-produk --actor platform-c
 
 chk "8. Sekarang closing website lolos (dependency terpenuhi)" 0 "$WEB" "$W" submit \
   --project checkout-redesign --status SELESAI \
   --evidence "url live: checkout.nevgo.id, screenshot terlampir" \
-  --verification "curl -I checkout.nevgo.id -> 200 OK, dicek manual"
+  --verification "curl -I checkout.nevgo.id -> 200 OK, dicek manual" --actor platform-a
 
 chk "9. Kirim status sama dua kali -> no-op, tidak ada duplikat" 0 "$WEB" "$W" submit \
   --project checkout-redesign --status SELESAI \
@@ -75,7 +75,7 @@ chk "11. Agen di operasional coba menutup proyek divisi website (kepemilikan kab
 
 chk "12. Agen non-owner mencoba paksa --override -> DITOLAK (exit 2)" 2 "$WEB" "$W" submit \
   --project launch-page --status SELESAI --override --reason "katanya urgent" \
-  --evidence "halaman live" --verification "sudah dicek"
+  --evidence "halaman live" --verification "sudah dicek" --actor platform-d
 
 chk "13. Owner menemukan masalah setelah 'selesai' -> reopen" 0 "$WEB" "$W" reopen \
   --project checkout-redesign --actor owner \
@@ -85,12 +85,12 @@ chk "14. Proyek baru menunggu checkout yang sedang dibuka lagi" 0 "$WEB" "$W" su
   --project launch-page --status SIAP-JALAN --actor platform-a
 chk "15. ... dan mencatat dependency ke checkout-redesign" 0 "$WEB" "$W" depend add \
   --project launch-page --depends-on checkout-redesign \
-  --reason "CTA launch-page membawa user ke checkout"
+  --reason "CTA launch-page membawa user ke checkout" --actor platform-a
 
 chk "16. closing launch-page ditahan (checkout belum selesai lagi)" 3 "$WEB" "$W" submit \
   --project launch-page --status SELESAI \
   --evidence "url live: nevgo.id/launch, diuji di 3 browser" \
-  --verification "curl -I nevgo.id/launch -> 200; cek klik CTA manual"
+  --verification "curl -I nevgo.id/launch -> 200; cek klik CTA manual" --actor platform-a
 
 chk "17. Owner rekonsiliasi: risiko diterima, tutup dengan --override" 0 "$WEB" "$W" submit \
   --project launch-page --status SELESAI \
@@ -101,16 +101,23 @@ chk "17. Owner rekonsiliasi: risiko diterima, tutup dengan --override" 0 "$WEB" 
 
 chk "18. Catatan bebas 'selesai tapi perlu dicek lagi' bukan status" 0 "$WEB" "$W" note \
   --project launch-page \
-  --message "perlu dicek lagi banner promo setelah harbolnas turun minggu depan (catatan, bukan status)"
+  --message "perlu dicek lagi banner promo setelah harbolnas turun minggu depan (catatan, bukan status)" --actor owner
 
 chk "19. Cek integritas hash-chain semua ledger" 0 "$ROOT" "$W" verify
 
+chk "20. Dream: konsolidasi pengalaman sesi menjadi PROPOSAL memori" 0 "$ROOT" "$W" dream run
+chk "21. Dream list menampilkan proposal pending" 0 "$ROOT" "$W" dream list
+chk "22. Non-owner tidak boleh promote" 2 "$ROOT" "$W" dream promote latest --actor platform-a
+chk "23. Owner promote proposal -> memori aktif" 0 "$ROOT" "$W" dream promote latest --actor owner
+chk "24. INDEX memori aktif bisa dibaca di awal sesi" 0 "$ROOT" "$W" dream index
+
 unset NEVGO_NO_GIT
 (cd "$ROOT" && "$W" board --write)
-(cd "$ROOT" && "$W" commit --message "seed demo: skenario multi-platform")
+(cd "$ROOT" && "$W" commit --message "seed demo: skenario multi-platform + memori dream")
 
 echo ""
 echo "Selesai. Coba:"
 echo "  cd $ROOT && ./workflow status --json"
 echo "  cd $ROOT && ./workflow rejections"
+echo "  cd $ROOT && ./workflow dream index"
 echo "  cat $ROOT/BOARD.md"

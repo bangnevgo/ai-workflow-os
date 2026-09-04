@@ -45,6 +45,8 @@ t "closing x ditahan karena y belum SELESAI" 3 bash -c "cd '$D' && '$W' submit -
 t "depend remove non-owner ditolak" 2 bash -c "cd '$D' && '$W' depend remove --project x --depends-on y --actor platform-a --reason 'tidak perlu lagi'"
 t "override non-owner ditolak" 2 bash -c "cd '$D' && '$W' submit --project x --status SELESAI --override --actor platform-a --reason 'urgent' --evidence 'url' --verification 'cek'"
 t "closing x lolos setelah y SELESAI" 0 bash -c "cd '$D' && '$W' submit --project y --status SIAP-JALAN && '$W' submit --project y --status SELESAI --evidence 'url' --verification 'cek' && '$W' submit --project x --status SELESAI --evidence 'url' --verification 'cek'"
+t "override owner menutup walau dep belum tuntas" 0 bash -c "cd '$D' && '$W' submit --project m --status SIAP-JALAN && '$W' depend add --project m --depends-on n --reason 'm butuh n' && '$W' submit --project m --status SELESAI --evidence 'url' --verification 'cek' --override --actor owner --reason 'risiko diterima'"
+t "status proyek yang di-override benar-benar SELESAI" 0 bash -c "cd '$D' && '$W' status --project m --json | grep -q SELESAI"
 
 # --- append-only & integritas -------------------------------------------------------
 LED="$T/.workflow/ledger/website.jsonl"
@@ -71,6 +73,23 @@ t "journal penolakan berisi kejadian" 0 bash -c "cd '$D' && '$W' rejections"
 # --- BOARD (view turunan) -----------------------------------------------------------------
 t "BOARD bisa dibangun ulang" 0 "$W" board --write
 [ -f "$T/BOARD.md" ] && { PASS=$((PASS+1)); echo "ok   BOARD.md dibuat"; } || { FAIL=$((FAIL+1)); echo "FAIL BOARD.md tidak dibuat"; }
+
+# --- DREAM: memori terkompilasi --------------------------------------------------------------
+LED_LINES=$(wc -l < "$T/.workflow/ledger/website.jsonl")
+t "dream run membuat proposal (input tidak diubah)" 0 "$W" dream run
+NP=$(find "$T/.workflow/dreams/proposals" -name manifest.json 2>/dev/null | wc -l)
+[ "$NP" -ge 1 ] && { PASS=$((PASS+1)); echo "ok   ada $NP proposal"; } || { FAIL=$((FAIL+1)); echo "FAIL tidak ada proposal"; }
+if [ "$(wc -l < "$T/.workflow/ledger/website.jsonl")" -eq "$LED_LINES" ]; then
+  PASS=$((PASS+1)); echo "ok   ledger tidak berubah oleh dream run"
+else
+  FAIL=$((FAIL+1)); echo "FAIL dream run menulis ke ledger"
+fi
+t "dream list menampilkan proposal" 0 "$W" dream list
+t "dream promote non-owner ditolak" 2 "$W" dream promote latest --actor platform-a
+t "dream promote owner diterima" 0 "$W" dream promote latest --actor owner
+[ -f "$T/.workflow/dreams/memory/INDEX.md" ] && { PASS=$((PASS+1)); echo "ok   memori INDEX.md aktif"; } || { FAIL=$((FAIL+1)); echo "FAIL memori INDEX.md tidak aktif"; }
+t "dream index terbaca" 0 "$W" dream index
+t "dream journal mencatat riwayat" 0 bash -c "'$W' dream journal --last 3 | grep -q promote"
 
 echo ""
 echo "Hasil: $PASS lulus, $FAIL gagal"

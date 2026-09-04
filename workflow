@@ -60,6 +60,7 @@ DEFAULT_POLICY = {
     "selesai_min_from": ["SIAP-JALAN", "BERJALAN"],
     "dep_hold_policy": "any",          # "any" | "outgoing"
     "max_cc": 5,
+    "memory_index_max_lines": 200,     # cap INDEX.md memori terkompilasi (dream)
 }
 
 
@@ -362,7 +363,7 @@ def compute_states(entries):
         proj = e.get("project")
         if not proj:
             continue
-        if k == "submit" and e.get("to"):
+        if k in ("submit", "override") and e.get("to"):
             st[proj] = {"state": e["to"], "ts": e.get("ts"), "seq": e.get("seq")}
         elif k == "reopen" and proj in st:
             st[proj] = {"state": "BERJALAN", "ts": e.get("ts"), "seq": e.get("seq")}
@@ -582,6 +583,599 @@ def _fmt_table(header, rows):
     return "\n".join(out)
 
 
+# ============================================================================
+# DREAM — konsolidasi pengalaman sesi menjadi memori terkompilasi
+# ----------------------------------------------------------------------------
+# Analogi pola "Memory & Dreaming" (Karpathy wiki / compiled knowledge):
+#   - Lapisan episodik  = ledger per divisi + journal penolakan (append-only)
+#   - Dream (compile)   = job out-of-band: baca sinyal terkini, TIDAK mengubah
+#                         input, hasil = PROPOSAL di .workflow/dreams/proposals/
+#   - Gerbang manusia   = owner review lalu promote/reject (dicatat di journal)
+#   - Memori semantik   = .workflow/memory/ yang dibaca agen saat sesi mulai
+# Empat fase: Orient -> Gather Recent Signal -> Consolidate -> Prune & Index.
+# ============================================================================
+
+def dreams_root(root, sub=None):
+    base = os.path.join(root, ".workflow", "dreams")
+    if sub is None:
+        return base
+    return os.path.join(base, sub)
+
+
+def proposals_dir(root):
+    return dreams_root(root, "proposals")
+
+
+def memory_dir(root):
+    return dreams_root(root, "memory")   # live memory ter-promote
+
+
+def dream_id():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return f"dream-{now:%Y%m%d-%H%M%S}-{hashlib.sha256(os.urandom(8)).hexdigest()[:6]}"
+
+
+def _now_str():
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def dream_window_cutoff(hours):
+    if not hours:
+        return None
+    return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+
+
+def _ts_in_window(ts, cutoff):
+    if cutoff is None or not ts:
+        return True
+    try:
+        return datetime.datetime.fromisoformat(ts) >= cutoff
+    except ValueError:
+        return True
+
+
+def _ledger_events(root, cfg, cutoff):
+    """Kumpulkan event ledger seluruh divisi (+window), deterministik."""
+    evs = []
+    for div in cfg["divisions"]:
+        for e in read_entries(root, div, strict=False):
+            if e.get("kind") in ("submit", "reopen", "override", "dep", "dep-remove", "note") \
+               and _ts_in_window(e.get("ts"), cutoff):
+                evs.append(e)
+    evs.sort(key=lambda e: (e.get("ts", ""), e.get("div", ""), e.get("seq", 0)))
+    return evs
+
+
+def _reject_events(root, cfg, cutoff):
+    evs = []
+    for div in cfg["divisions"]:
+        for e in read_entries(root, div, kind="rejections", strict=False):
+            if _ts_in_window(e.get("ts"), cutoff):
+                evs.append(e)
+    evs.sort(key=lambda e: (e.get("ts", ""), e.get("div", ""), e.get("seq", 0)))
+    return evs
+
+
+LESSON_TEXT = {
+    "state": "transisi status tidak sah (mis. SELESAI langsung dari IDE) — wajib lewat SIAP-JALAN/BERJALAN",
+    "evidence": "klaim SELESAI tanpa bukti konkret — selalu bawa --evidence (url / screenshot / hasil test)",
+    "verification": "klaim SELESAI tanpa cara memeriksa — selalu bawa --verification (mis. curl -I -> 200 OK)",
+    "owner": "mencoba operasi khusus owner (override/reopen/remove depend) — itu hak owner",
+    "hold": "closing ditahan dependency terbuka — cek `workflow depend list` sebelum klaim SELESAI",
+    "format": "format argumen salah (--reason/--override) — ikuti `workflow states`",
+}
+
+
+def _reason_messages(e):
+    rs = e.get("reasons") or []
+    out = []
+    for r in rs:
+        if isinstance(r, list) and len(r) == 2:
+            out.append(r[1] if isinstance(r[1], str) else str(r[1]))
+        elif isinstance(r, str):
+            out.append(r)
+    return out
+
+
+def _qstate(root, cfg, q):
+    try:
+        d, p = q.split("/", 1)
+        entries = read_entries(root, d, strict=False)
+        return state_of(entries, p) or "IDE"
+    except Exception:
+        return "?"
+
+
+# ---- ringkas dokumen proposal ---------------------------------------------
+
+def doc_state(root, cfg, evs):
+    L = ["# ORIENT — state saat ini (snapshot, bukan histori)",
+         "",
+         f"_Dibuat {_now_str()} oleh dream run. Sumber: ledger per divisi._",
+         ""]
+    for div in cfg["divisions"]:
+        entries = read_entries(root, div, strict=False)
+        states = compute_states(entries)
+        names = [p for p in _all_project_names(entries)]
+        if not names:
+            continue
+        L.append(f"## Divisi {cfg['divisions'][div]['label']} ({div})")
+        for p in names:
+            info = states.get(p, {})
+            L.append(f"- **{qname(div, p)}** — {info.get('state') or 'IDE'}  "
+                     f"(update {(info.get('ts') or '')[:16]})")
+        L.append("")
+    if all(not _all_project_names(read_entries(root, d, strict=False))
+           for d in cfg["divisions"]):
+        L.append("_Belum ada proyek tercatat._")
+    return "\n".join(L)
+
+
+def doc_projects(root, cfg, evs, cutoff):
+    L = ["# PROJECTS — konteks terkompilasi per proyek",
+         "",
+         f"_Dibuat {_now_str()}. Evidence/verification diambil dari entry terakhir "
+         f"yang menyediakannya._",
+         ""]
+    open_edges = all_open_edges(root, cfg)
+    by_dependen = {}
+    for e in open_edges:
+        fq, tq = counterpart(e)
+        by_dependen.setdefault(fq, []).append((tq, e))
+    notes_by_proj = {}
+    for e in evs:
+        if e.get("kind") == "note" and e.get("project"):
+            notes_by_proj.setdefault(qname(e.get("div"), e["project"]), []).append(e)
+    wrote = False
+    for div in cfg["divisions"]:
+        entries = read_entries(root, div, strict=False)
+        states = compute_states(entries)
+        names = _all_project_names(entries)
+        if not names:
+            continue
+        wrote = True
+        L.append(f"## {cfg['divisions'][div]['label']} (`{div}`)")
+        for p in names:
+            q = qname(div, p)
+            state = states.get(p, {}).get("state") or "IDE"
+            ev = ve = ""
+            for e in reversed(entries):
+                if e.get("project") != p:
+                    continue
+                if e.get("kind") in ("submit", "override") and not ev and e.get("evidence"):
+                    ev = e["evidence"]
+                if e.get("kind") in ("submit", "override") and not ve and e.get("verification"):
+                    ve = e["verification"]
+            deps = by_dependen.get(q, [])
+            dep_txt = ""
+            if deps:
+                dep_txt = " menunggu: " + ", ".join(f"{t}({_qstate(root, cfg, t)})" for t, _ in deps)
+            L.append(f"- **{p}** — {state}{dep_txt}")
+            if ev:
+                L.append(f"    evidence: {_trunc(ev, 110)}")
+            if ve:
+                L.append(f"    verifikasi: {_trunc(ve, 110)}")
+            for n in notes_by_proj.get(q, [])[-2:]:
+                L.append(f"    catatan ({n.get('actor')}): {_trunc(n.get('note'), 110)}")
+        L.append("")
+    if not wrote:
+        L.append("_Belum ada proyek._")
+    return "\n".join(L)
+
+
+def doc_lessons(root, cfg, rejs, cutoff):
+    L = ["# LESSONS — pola kesalahan terbaru (dari journal penolakan)",
+         "",
+         f"_Fase Gather: hanya kejadian penolakan dalam jendela waktu terakhir_ "
+         f"(cutoff: {cutoff or 'semua waktu'}).",
+         ""]
+    if not rejs:
+        L.append("_Tidak ada penolakan dalam jendela ini._")
+        return "\n".join(L)
+    # taksonomi: (div, tag) -> jumlah + contoh pertama
+    tax = {}
+    samples = {}
+    for e in rejs:
+        div = e.get("div")
+        for r in e.get("reasons") or []:
+            if not (isinstance(r, list) and len(r) == 2):
+                continue
+            tag = r[0]
+            key = (div, tag)
+            tax[key] = tax.get(key, 0) + 1
+            samples.setdefault(key, (e.get("project"), e.get("requested_status"), e.get("actor")))
+    for (div, tag), n in sorted(tax.items(), key=lambda kv: (-kv[1], kv[0])):
+        txt = LESSON_TEXT.get(tag, f"penolakan tipe '{tag}'")
+        proj, req, actor = samples[(div, tag)]
+        who = f"{div}/{proj}" if proj else div
+        parts = [who]
+        if req:
+            parts.append(f"→ {req}")
+        if actor:
+            parts.append(f"oleh {actor}")
+        L.append(f"- [{tag}] {div}: {n}× {txt}. Contoh: {' '.join(parts)}.")
+    L.append("")
+    L.append("> Aturan-aturan ini hidup di validator (`workflow states`). Baris di atas "
+             "hanya memberi tahu platform mana yang paling sering melanggarnya.")
+    return "\n".join(L)
+
+
+def doc_decisions(root, cfg, evs):
+    L = ["# DECISIONS — keputusan owner yang tidak boleh dilupakan",
+         "",
+         "_Override & reopen tercatat di ledger (append-only). Ringkasan ini "
+         "biar sesi berikutnya tidak mengulang perdebatan yang sudah diputus._",
+         ""]
+    dec = [e for e in evs if e.get("kind") in ("override", "reopen")]
+    # sertakan keputusan lama sekalipun di luar jendela — ambil dari semua ledger
+    if not dec:
+        dec = []
+        for div in cfg["divisions"]:
+            for e in read_entries(root, div, strict=False):
+                if e.get("kind") in ("override", "reopen"):
+                    dec.append(e)
+        dec.sort(key=lambda e: e.get("ts", ""))
+    if not dec:
+        L.append("_Belum ada keputusan owner (override/reopen)._")
+        return "\n".join(L)
+    for e in dec[-40:]:
+        frm = e.get("from") or "IDE"
+        L.append(f"- {e.get('ts', '')[:16]} — {qname(e.get('div'), e.get('project'))} "
+                 f"{frm}→{e.get('to')} oleh {e.get('actor')}: {e.get('reason') or e.get('note') or '—'}")
+    return "\n".join(L)
+
+
+def doc_crosslinks(root, cfg, evs, cutoff):
+    L = ["# CROSSLINKS — peta ketergantungan lintas divisi",
+         "",
+         "_Open edge saat ini + ringkasan cc. Mencatat ≠ mengeksekusi._",
+         ""]
+    edges = all_open_edges(root, cfg)
+    if edges:
+        for e in edges:
+            fq, tq = counterpart(e)
+            st = _qstate(root, cfg, tq)
+            mark = "✓" if st == "SELESAI" else "✗ menunggu"
+            L.append(f"- **{fq}** → {tq}  [{mark}, kini {st}] — {_trunc(e.get('reason') or '', 90)}")
+    else:
+        L.append("_Tidak ada dependency terbuka._")
+    cc_counts = {}
+    closed = 0
+    for e in evs:
+        if e.get("kind") == "dep-remove":
+            closed += 1
+        for t in e.get("cc") or []:
+            cc_counts[t] = cc_counts.get(t, 0) + 1
+    L.append("")
+    L.append(f"_Dalam jendela: {closed} dependency ditutup._")
+    if cc_counts:
+        L.append("_cc lintas divisi tercatat:_ " +
+                 ", ".join(f"{t} {n}×" for t, n in sorted(cc_counts.items())))
+    return "\n".join(L)
+
+
+def doc_agents(root, cfg, evs, rejs):
+    L = ["# AGENTS — pola aktivitas per platform AI",
+         "",
+         "_Siapa yang bekerja, seberapa sering, dan siapa yang paling sering "
+         "tertolak validator — supaya brief berikutnya bisa diarahkan._",
+         ""]
+    act = {}
+    for e in evs:
+        a = e.get("actor") or "?"
+        act.setdefault(a, {"events": 0, "kinds": {}})
+        act[a]["events"] += 1
+        k = e.get("kind", "?")
+        act[a]["kinds"][k] = act[a]["kinds"].get(k, 0) + 1
+    rej_by = {}
+    for e in rejs:
+        a = e.get("actor") or "?"
+        rej_by[a] = rej_by.get(a, 0) + 1
+    if not act:
+        L.append("_Belum ada aktivitas tercatat._")
+    for a, info in sorted(act.items(), key=lambda kv: (-kv[1]["events"], kv[0])):
+        kparts = ", ".join(f"{k}={v}" for k, v in sorted(info["kinds"].items()))
+        warn = ""
+        if rej_by.get(a, 0) >= 2:
+            warn = "  ⚠ sering tertolak — baca `workflow rejections`"
+        L.append(f"- **{a}**: {info['events']} event ({kparts}); "
+                 f"penolakan: {rej_by.get(a, 0)}{warn}")
+    return "\n".join(L)
+
+
+def build_dream_index(state_doc, files, cap):
+    """Prune & Index: index pendek yang dibaca pertama dalam sekali pandang."""
+    lines = ["# MEMORY INDEX — baca dulu di awal sesi (dipromosikan via dream)",
+             "",
+             "Sumber: ledger + journal penolakan. Detail di file topik; yang di sini "
+             "hanya sinyal yang harus dibawa dari sesi sebelumnya.",
+             ""]
+    # --- ringkasan status (dari doc_state) ---------------------------------
+    lines.append("## Status sekarang")
+    for ln in state_doc.splitlines():
+        s = ln.strip()
+        if s.startswith("- **"):
+            lines.append("  " + s)
+    # --- pelajaran teratas --------------------------------------------------
+    lessons_file = next((f for f in files if f["name"] == "20-LESSONS.md"), None)
+    lessons = []
+    if lessons_file:
+        lessons = [ln for ln in lessons_file["text"].splitlines()
+                   if ln.startswith("- [")]
+    lines.append("")
+    lines.append("## Pelajaran (jangan ulangi)")
+    if lessons:
+        for ln in lessons[:cap]:
+            # ringkas
+            lines.append("  " + _trunc(ln, 120))
+    else:
+        lines.append("  _tidak ada penolakan terbaru_")
+    # --- pointer -------------------------------------------------------------
+    lines.append("")
+    lines.append("## Baca lanjut")
+    for f in files:
+        if f["name"].endswith(".md"):
+            lines.append(f"  - {f['name']}: {f['short']}")
+    # enforce cap deterministik
+    if len(lines) > cap:
+        head = lines[:8]
+        tail = lines[-max(3, len([l for l in lines if l.startswith('  - ')])):]
+        body = [l for l in lines[8:] if l not in head and l not in tail]
+        budget = cap - len(head) - len(tail)
+        body = body[:max(0, budget)]
+        lines = head + body + tail
+        if len(lines) > cap:
+            lines = lines[:cap]
+            lines.append("  … (index terpotong oleh batas; cek file topik)")
+    return "\n".join(lines)
+
+
+def cmd_dream(args):
+    """Dispatcher sub-perintah dream. Jalankan dari mana saja (root)."""
+    root = args.root
+    cfg = load_config(root)
+    cap = int(cfg["policy"].get("memory_index_max_lines", 200))
+    actor = resolve_actor(cfg, args)
+    sub = args.dream_cmd
+
+    if sub == "run":
+        cutoff = dream_window_cutoff(args.since_hours if args.since_hours else None)
+        evs = _ledger_events(root, cfg, cutoff)
+        rejs = _reject_events(root, cfg, cutoff)
+        pid = dream_id()
+        d = os.path.join(proposals_dir(root), pid)
+        os.makedirs(d, exist_ok=True)
+        files = []
+        def add(name, text, short):
+            p = os.path.join(d, name)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text + ("\n" if not text.endswith("\n") else ""))
+            files.append({"name": name, "short": short, "text": text})
+
+        state_doc = doc_state(root, cfg, evs)
+        add("00-STATE.md", state_doc,
+            "snapshot status seluruh divisi")
+        proj_doc = doc_projects(root, cfg, evs, cutoff)
+        add("10-PROJECTS.md", proj_doc,
+            "konteks terkompilasi per proyek (evidence, depend, catatan)")
+        less_doc = doc_lessons(root, cfg, rejs, cutoff)
+        add("20-LESSONS.md", less_doc,
+            "pola kesalahan dari journal penolakan")
+        add("30-DECISIONS.md", doc_decisions(root, cfg, evs),
+            "keputusan owner (override/reopen) + alasan")
+        add("40-CROSSLINKS.md", doc_crosslinks(root, cfg, evs, cutoff),
+            "peta dependency lintas divisi")
+        add("50-AGENTS.md", doc_agents(root, cfg, evs, rejs),
+            "pola aktivitas per platform")
+        idx = build_dream_index(state_doc, files, cap)
+        with open(os.path.join(d, "INDEX.md"), "w", encoding="utf-8") as f:
+            f.write(idx)
+        manifest = {
+            "id": pid, "ts": _now_str(), "actor": actor,
+            "since_hours": args.since_hours or 0,
+            "counts": {"ledger_events": len(evs), "rejections": len(rejs)},
+            "files": [f["name"] for f in files] + ["INDEX.md"],
+        }
+        with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        try:
+            append_entry(root, "journal", "dreams", {
+                "kind": "dream-run", "project": pid, "actor": actor,
+                "note": f"run dream ({len(evs)} event, {len(rejs)} penolakan)",
+            }, actor=actor)
+        except WorkflowError:
+            pass   # proposal tetap ada; journal tidak wajib
+        print(c_grn(f"DREAM {pid} dibuat oleh {actor}"))
+        print(c_dim(f"  fase: orient → gather ({manifest['counts']}) → consolidate "
+                    f"→ prune & index (cap {cap} baris)"))
+        print(c_dim(f"  input ledger/rejections TIDAK diubah — ini proposal."))
+        print(f"  {d}/")
+        print("  Review:  workflow dream review " + pid)
+        print("  Promote: workflow dream promote " + pid + " --actor owner")
+        return EX_OK
+
+    if sub == "list":
+        base = proposals_dir(root)
+        if not os.path.isdir(base):
+            print(c_dim("(belum ada proposal dream)"))
+            return EX_OK
+        rows = []
+        for name in sorted(os.listdir(base)):
+            mf = os.path.join(base, name, "manifest.json")
+            if not os.path.isfile(mf):
+                continue
+            try:
+                m = json.load(open(mf, encoding="utf-8"))
+            except Exception:
+                continue
+            status = "PENDING"
+            for e in reversed(read_entries(root, "journal", kind="dreams", strict=False)):
+                if e.get("project") == name and e.get("kind") in ("dream-promote", "dream-reject"):
+                    status = "PROMOTED" if e["kind"] == "dream-promote" else "REJECTED"
+                    break
+            rows.append([name, (m.get("ts") or "")[5:16], m.get("actor", "?"),
+                         f"{m.get('counts', {}).get('ledger_events', 0)} ev",
+                         status])
+        if not rows:
+            print(c_dim("(belum ada proposal dream)"))
+            return EX_OK
+        print(_fmt_table(["proposal", "dibuat", "oleh", "sinyal", "status"], rows))
+        return EX_OK
+
+    if sub == "review":
+        pid = args.proposal
+        if pid == "latest":
+            pid = _latest_proposal(root)
+            if not pid:
+                print(c_red("belum ada proposal."), file=sys.stderr)
+                return EX_ERR
+        d = os.path.join(proposals_dir(root), pid)
+        if not os.path.isdir(d):
+            print(c_red(f"proposal {pid} tidak ditemukan di {proposals_dir(root)}"),
+                  file=sys.stderr)
+            return EX_ERR
+        m = json.load(open(os.path.join(d, "manifest.json"), encoding="utf-8"))
+        print(c_bld(f"Proposal: {pid}  (oleh {m.get('actor')}, {m.get('ts')})"))
+        print(f"  {d}/")
+        for name in m.get("files", []):
+            p = os.path.join(d, name)
+            n = len(_read_lines(p)) if os.path.exists(p) else 0
+            print(f"  - {name:<20} {n} baris")
+        print("")
+        print(c_dim("(isi lengkap: buka folder proposal, atau promote kalau sudah layak.)"))
+        return EX_OK
+
+    if sub == "promote":
+        try:
+            require_owner(cfg, actor)
+        except Rejected as r:
+            append_entry(root, "journal", "dreams", {
+                "kind": "dream-promote-denied", "project": args.proposal or "",
+                "actor": actor, "cwd": os.getcwd(), "note": "; ".join(m for _, m in r.reasons),
+            }, actor=actor)
+            _print_reject(r.reasons, "dreams", args.proposal or "latest")
+            return EX_REJECT
+        pid = args.proposal
+        if pid == "latest":
+            pid = _latest_proposal(root)
+        if not pid or not os.path.isdir(os.path.join(proposals_dir(root), pid)):
+            print(c_red("proposal tidak ditemukan."), file=sys.stderr)
+            return EX_ERR
+        d = os.path.join(proposals_dir(root), pid)
+        m = json.load(open(os.path.join(d, "manifest.json"), encoding="utf-8"))
+        dst = memory_dir(root)
+        tmp = dst + ".tmp-" + pid
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp, exist_ok=True)
+        for name in m.get("files", []):
+            src = os.path.join(d, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(tmp, name))
+        with open(os.path.join(tmp, ".last-proposal"), "w", encoding="utf-8") as f:
+            f.write(pid + "\n" + m.get("ts", "") + "\n")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        old = dst + ".old-" + pid
+        shutil.rmtree(old, ignore_errors=True)
+        if os.path.isdir(dst):
+            os.rename(dst, old)
+        try:
+            os.rename(tmp, dst)
+        except Exception:
+            if os.path.isdir(old):
+                os.rename(old, dst)
+            raise
+        shutil.rmtree(old, ignore_errors=True)
+        append_entry(root, "journal", "dreams", {
+            "kind": "dream-promote", "project": pid, "actor": actor,
+            "note": f"promote proposal {pid} → .workflow/memory/",
+        }, actor=actor)
+        print(c_grn(f"DIPROMOSIKAN {pid} oleh {actor} → {dst}"))
+        print(c_dim("  Ledger tidak berubah. Git menyimpan versi memori lama."))
+        maybe_commit(root, f"dream promote {pid}")
+        return EX_OK
+
+    if sub == "reject":
+        try:
+            require_owner(cfg, actor)
+        except Rejected as r:
+            _print_reject(r.reasons, "dreams", args.proposal)
+            return EX_REJECT
+        pid = args.proposal
+        if pid == "latest":
+            pid = _latest_proposal(root)
+        d = os.path.join(proposals_dir(root), pid) if pid else None
+        if not pid or not os.path.isdir(d):
+            print(c_red("proposal tidak ditemukan."), file=sys.stderr)
+            return EX_ERR
+        reason = (args.reason or "").strip()
+        if len(reason) < 3:
+            print(c_red("dream reject butuh --reason (kenapa proposal ditolak)."),
+                  file=sys.stderr)
+            return EX_REJECT
+        with open(os.path.join(d, "DECISION.md"), "w", encoding="utf-8") as f:
+            f.write(f"# Keputusan: REJECT\n\nditandai {_now_str()} oleh {actor}.\n\n{reason}\n")
+        append_entry(root, "journal", "dreams", {
+            "kind": "dream-reject", "project": pid, "actor": actor, "note": reason,
+        }, actor=actor)
+        print(c_yel(f"REJECTED {pid} oleh {actor}: {reason}"))
+        maybe_commit(root, f"dream reject {pid}")
+        return EX_OK
+
+    if sub == "index":
+        p = os.path.join(memory_dir(root), "INDEX.md")
+        if not os.path.isfile(p):
+            print(c_dim("(belum ada memori terpromosikan — jalankan "
+                        "'workflow dream run' lalu 'workflow dream promote latest'.)"))
+            return EX_OK
+        print(f"# memori aktif: {p}")
+        print("")
+        print(open(p, encoding="utf-8").read())
+        return EX_OK
+
+    if sub == "journal":
+        entries = read_entries(root, "journal", kind="dreams", strict=False)
+        if args.last:
+            entries = entries[-args.last:]
+        if not entries:
+            print(c_dim("(journal dream masih kosong)"))
+            return EX_OK
+        for e in entries:
+            print(f"  #{e['seq']:<4} {e.get('ts', '')[:19]}  {e.get('kind'):<14} "
+                  f"{e.get('project', '')}  oleh {e.get('actor', '')}"
+                  + (f"  — {e.get('note')}" if e.get("note") else ""))
+        return EX_OK
+
+    if sub == "clear":
+        try:
+            require_owner(cfg, actor)
+        except Rejected as r:
+            _print_reject(r.reasons, "dreams", "all")
+            return EX_REJECT
+        if not args.yes:
+            print(c_red("konfirmasi: dream clear --yes (hapus proposal & memori; "
+                        "journal tetap tersimpan)."), file=sys.stderr)
+            return EX_REJECT
+        for d in (proposals_dir(root), memory_dir(root)):
+            shutil.rmtree(d, ignore_errors=True)
+        print(c_grn("OK. Proposal & memori dibersihkan (journal dream tetap ada)."))
+        maybe_commit(root, "dream clear")
+        return EX_OK
+
+    print("sub-perintah dream tidak dikenal:", sub, file=sys.stderr)
+    return EX_ERR
+
+
+def _latest_proposal(root):
+    base = proposals_dir(root)
+    if not os.path.isdir(base):
+        return None
+    dirs = [n for n in os.listdir(base)
+            if os.path.isfile(os.path.join(base, n, "manifest.json"))]
+    if not dirs:
+        return None
+    return max(dirs, key=lambda n: os.path.getmtime(os.path.join(base, n)))
+
+
 # ----------------------------------------------------------------------------
 # BOARD — view turunan
 # ----------------------------------------------------------------------------
@@ -732,6 +1326,19 @@ def generate_board(root, cfg):
             first = reasons[0] if reasons else ""
             lines.append(f"- **{proj}**{st} oleh {e.get('actor')} ({e.get('kind', 'reject')}): "
                          f"{_trunc(first, 100)}")
+    # memori terkompilasi (dream) bila sudah dipromosikan
+    mem_idx = os.path.join(memory_dir(root), "INDEX.md")
+    if os.path.isfile(mem_idx):
+        lines.append("## Memori terkompilasi (Dreaming)")
+        lines.append("")
+        lines.append("> Dipromosikan dari proposal `workflow dream` — baca sebelum mulai sesi "
+                     "baru: `workflow dream index`.")
+        lines.append("")
+        for ln in _read_lines(mem_idx)[:6]:
+            if ln.strip():
+                lines.append(_trunc(ln, 118))
+        lines.append("")
+
     lines.append("")
     lines.append(f"---")
     lines.append(f"_Dibuat {now}. Sumber: `.workflow/ledger/*.jsonl`. Periksa integritas: `workflow verify`._")
@@ -1349,15 +1956,17 @@ def cmd_verify(args):
     root = args.root
     cfg = load_config(root)
     bad = 0
-    for div in cfg["divisions"]:
-        for kind in ("ledger", "rejections"):
-            ok, msg = verify_store(root, div, kind, heal=False)
-            p = store_path(root, div, kind)
-            n = len(_read_lines(p))
-            state = c_grn("ok") if ok else c_red("KORUP")
-            print(f"  {kind:<10} {div:<10} {state}   ({n} baris)  {msg if not ok else ''}")
-            if not ok:
-                bad += 1
+    checks = [("ledger", div) for div in cfg["divisions"]] \
+             + [("rejections", div) for div in cfg["divisions"]] \
+             + [("dreams", "journal")]
+    for kind, div in checks:
+        ok, msg = verify_store(root, div, kind, heal=False)
+        p = store_path(root, div, kind)
+        n = len(_read_lines(p))
+        state = c_grn("ok") if ok else c_red("KORUP")
+        print(f"  {kind:<10} {div:<10} {state}   ({n} baris)  {msg if not ok else ''}")
+        if not ok:
+            bad += 1
     print("")
     if bad:
         print(c_red(f"{bad} store bermasalah. Pemulihan: "
@@ -1399,11 +2008,16 @@ def cmd_wipe(args):
             for p in (store_path(root, div, kind), head_path(root, div, kind)):
                 if os.path.exists(p):
                     os.remove(p)
+    for p in (store_path(root, "journal", "dreams"), head_path(root, "journal", "dreams")):
+        if os.path.exists(p):
+            os.remove(p)
     target = os.path.join(root, "BOARD.md")
     if os.path.exists(target):
         os.remove(target)
+    shutil.rmtree(dreams_root(root), ignore_errors=True)
     maybe_commit(root, "wipe: mulai bersih")
-    print(c_grn("OK. Ledger & BOARD dikosongkan. Struktur tetap. Mulai dari `workflow submit`."))
+    print(c_grn("OK. Ledger, BOARD, & memori dream dikosongkan. Struktur tetap. "
+                "Mulai dari `workflow submit`."))
     return EX_OK
 
 
@@ -1496,6 +2110,33 @@ def build_parser():
     p.add_argument("--write", action="store_true", help="tulis BOARD.md di root")
     p.set_defaults(fn=cmd_board)
 
+    # ---- dream: konsolidasi sesi menjadi memori terkompilasi -----------------
+    p = sub.add_parser("dream", help="konsolidasi pengalaman sesi (ledger/rejections) "
+                                     "menjadi memori terkompilasi — pola Memory & Dreaming")
+    dp = p.add_subparsers(dest="dream_cmd", required=True, metavar="SUB",
+                          help="run | list | review | promote | reject | index | journal | clear")
+    d = dp.add_parser("run", help="buat PROPOSAL memori dari sinyal terbaru "
+                                  "(tidak mengubah ledger; butuh review owner)")
+    d.add_argument("--since-hours", type=int, default=168,
+                   help="jendela sinyal dalam jam (default 168 = 7 hari; 0 = semua)")
+    add_actor_arg(d)
+    d = dp.add_parser("list", help="daftar proposal dream + status")
+    d = dp.add_parser("review", help="ringkas isi proposal")
+    d.add_argument("proposal", nargs="?", default="latest")
+    d = dp.add_parser("promote", help="khusus owner: promosikan proposal → memori aktif")
+    add_actor_arg(d)
+    d.add_argument("proposal", nargs="?", default="latest")
+    d = dp.add_parser("reject", help="khusus owner: tolak proposal (butuh --reason)")
+    add_actor_arg(d)
+    d.add_argument("proposal", nargs="?", default="latest")
+    d.add_argument("--reason", required=False)
+    d = dp.add_parser("index", help="tampilkan INDEX memori aktif")
+    d = dp.add_parser("journal", help="riwayat aktivitas dream (run/promote/reject)")
+    d.add_argument("--last", type=int, default=None)
+    d = dp.add_parser("clear", help="khusus owner: hapus proposal & memori (journal tetap)")
+    add_actor_arg(d)
+    d.add_argument("--yes", action="store_true")
+
     p = sub.add_parser("verify", help="cek integritas hash-chain semua store")
     p.set_defaults(fn=cmd_verify)
 
@@ -1519,6 +2160,8 @@ def main(argv=None):
         args.root = root
         if args.cmd == "init":
             return cmd_init(args)
+        if args.cmd == "dream":
+            return cmd_dream(args)
         return args.fn(args)
     except IntegrityError as e:
         print(c_red(f"ERROR: {e}"), file=sys.stderr)

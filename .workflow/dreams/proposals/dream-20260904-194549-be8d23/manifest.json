@@ -1,0 +1,19 @@
+{
+  "id": "dream-20260904-194549-be8d23",
+  "ts": "2026-09-04T19:45:49+00:00",
+  "actor": "manual",
+  "since_hours": 168,
+  "counts": {
+    "ledger_events": 12,
+    "rejections": 4
+  },
+  "files": [
+    "00-STATE.md",
+    "10-PROJECTS.md",
+    "20-LESSONS.md",
+    "30-DECISIONS.md",
+    "40-CROSSLINKS.md",
+    "50-AGENTS.md",
+    "INDEX.md"
+  ]
+}

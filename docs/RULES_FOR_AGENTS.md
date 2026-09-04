@@ -32,10 +32,15 @@
    apa pun.** Jangan menganggap `cc` sebagai perintah untuk mengerjakan sesuatu
    di divisi lain. Kalau kamu di-`cc`, kamu mencatat; eksekusi tetap diputuskan
    owner.
+8. **Baca memori terkompilasi kalau ada** (`workflow dream index`). Memori itu
+   dibangun dari pengalaman sesi sebelumnya oleh proses *dreaming* — bukan
+   "gossip" antar platform, tapi konsolidasi ledger + journal penolakan yang
+   sudah direview owner. Kalau tidak ada, lanjut biasa saja.
 
 ## Urutan kerja per task
 
 ```text
+0.  workflow dream index                → kalau memori aktif ada, baca dulu
 1.  workflow whoami                     → pastikan divisi benar
 2.  workflow status                     → pastikan belum dikerjakan orang lain
 3.  workflow submit --project <slug> --status SIAP-JALAN     ← sebelum mulai kerja
@@ -46,6 +51,17 @@
         --evidence "<bukti konkret: url/screenshot/hasil test/file>" \
         --verification "<cara bukti diperiksa>"
 ```
+
+### Apa itu "dream"?
+
+`workflow dream run` adalah **job di luar jalur kerja** (tidak memblokir siapa
+pun) yang mengkonsolidasi pengalaman sesi — seluruh ledger + journal penolakan
+dalam jendela waktu — menjadi **proposal memori** (empat fase: *orient →
+gather recent signal → consolidate → prune & index*). Proposal **tidak
+mengubah input apa pun**. Owner meninjau lalu `workflow dream promote` sebelum
+memori itu jadi bahan bacaan awal sesi berikutnya. Itulah lapisan memori
+*semantik* yang membuat tiap platform tidak lagi memulai dari nol.
+
 
 Kalau sebuah transisi ditolak, *selalu* cek `workflow rejections` supaya kamu
 tahu kenapa — lalu kirim ulang dengan klaim yang benar.

@@ -29,6 +29,11 @@ untuk aturannya.
 6. **Closing ditahan dependency.** Kalau proyek A mau ditutup tapi proyek B
    masih menunggu hasilnya, sistem menahan (`exit code 3`) sampai owner
    merekonsiliasi — `--override` hanya bisa owner.
+7. **Memori lintas sesi lewat Dreaming.** Ledger = memori *episodik*.
+   `workflow dream run` mengkonsolidasikannya (bersama journal penolakan)
+   menjadi **proposal memori** tanpa mengubah input; owner meninjau lalu
+   `workflow dream promote` ke memori aktif yang dibaca agen di awal sesi —
+   pola *Memory & Dreaming* / Karpathy wiki yang dijelaskan di `docs/DREAM.md`.
 
 ## Instalasi
 
@@ -98,6 +103,13 @@ workflow board --write               # regenerasi BOARD.md (view turunan)
 | `workflow verify` | cek integritas hash-chain seluruh store |
 | `workflow commit` | commit ledger + BOARD ke git |
 | `workflow wipe` | *khusus owner*: mulai bersih (menghapus data) |
+| `workflow dream run` | buat **proposal** memori dari ledger + rejections (input tak diubah) |
+| `workflow dream list` / `review` | daftar / ringkas proposal |
+| `workflow dream promote` | *khusus owner*: promosikan proposal → memori aktif |
+| `workflow dream reject` | *khusus owner*: tolak proposal (butuh `--reason`) |
+| `workflow dream index` | tampilkan INDEX memori aktif (baca di awal sesi agen) |
+| `workflow dream journal` | riwayat run/promote/reject |
+| `workflow dream clear` | *khusus owner*: hapus proposal & memori (journal tetap) |
 
 **Exit codes untuk otomasi:** `0` OK / no-op, `2` ditolak validator,
 `3` ditahan dependency, `1` error sistem.
