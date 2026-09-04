@@ -11,6 +11,13 @@
 
 ## One append-only ledger. Six business divisions. Five AI platforms. **Zero ops team.**
 
+> **TL;DR — keeping multiple AI agents in sync.** Running several LLM platforms (Claude,
+> ChatGPT, Gemini, …) on the same work? This is a **single source of truth for AI agent
+> teams**: an append-only, tamper-evident JSONL ledger where "done" is **evidence-gated**,
+> closed projects are held by **open dependencies**, and cross-session memory is compiled
+> from session logs using the **Memory & Dreaming / Karpathy wiki pattern** — so agents
+> never overwrite each other's finished work.
+
 You run Content, Marketing, Operations, Sales, Finance, and Website through **five different
 LLM platforms** — no ops team, just you and a fleet of agents. The hardest part is never the
 models. It's that every platform carries its *own* memory and its *own* interpretation of
