@@ -1,144 +1,237 @@
-# nevgo-workflow
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="python 3.9+"/>
+  <img src="https://img.shields.io/badge/dependencies-zero%20%E2%80%94%20stdlib%20only-2ea44f?style=for-the-badge" alt="zero dependencies"/>
+  <img src="https://img.shields.io/badge/ledger-append--only-critical?style=for-the-badge" alt="append-only ledger"/>
+  <img src="https://img.shields.io/badge/state%20machine-5%20statuses-blueviolet?style=for-the-badge" alt="5-state machine"/>
+  <img src="https://img.shields.io/badge/tests-37%20passing-success?style=for-the-badge" alt="37 tests passing"/>
+  <img src="https://img.shields.io/badge/design-Memory%20%26%20Dreaming-8b5cf6?style=for-the-badge" alt="Memory & Dreaming design"/>
+</p>
 
-Satu jalur tulis untuk mencatat progres — dipakai 6 divisi bisnis (Konten,
-Marketing, Operasional, Penjualan, Keuangan, Website) yang dikerjakan lewat
-5+ platform LLM berbeda, tanpa tim ops.
+# 🤖 ai-workflow-os
 
-Desain ini dijelaskan di `NEVGO_WORKFLOW_PRACTICAL.md`. Repo ini adalah
-prototipe nyata dari desain itu. Baca dulu README ini, lalu `workflow states`
-untuk aturannya.
+## One append-only ledger. Six business divisions. Five AI platforms. **Zero ops team.**
 
-## Prinsip inti
+You run Content, Marketing, Operations, Sales, Finance, and Website through **five different
+LLM platforms** — no ops team, just you and a fleet of agents. The hardest part is never the
+models. It's that every platform carries its *own* memory and its *own* interpretation of
+what happened.
 
-1. **Satu jalur tulis.** Tidak ada status yang masuk catatan resmi kecuali
-   lewat CLI `workflow`. Ledger tiap divisi *append-only* (tidak bisa ditimpa),
-   di-*track* git, dan dirantai hash — kalau ada yang mengubah sejarah, terdeteksi.
-2. **Divisi ditentukan oleh working directory**, bukan oleh klaim model.
-   Agen yang dipanggil di `~/nevgo/divisions/website/` = divisi Website.
-   Tidak peduli apa yang model "bilang" di chat.
-3. **Validator menolak, bukan mengingatkan.** Transisi ke `SELESAI` wajib
-   membawa `--evidence` (bukti konkret) dan `--verification` (cara bukti itu
-   diperiksa). Kosong = ditolak = *tidak ada byte yang tertulis*. Aturan ini
-   hidup di kode, bukan di prompt.
-4. **State machine murni:** `IDE → DISIAPKAN → SIAP-JALAN → BERJALAN → SELESAI`.
-   Tidak ada "hampir selesai". Kondisi semacam itu ditulis sebagai catatan
-   bebas (`workflow note`), bukan status.
-5. **Ledger sumber kebenaran; BOARD cuma tampilan.** `BOARD.md` di-root adalah
-   view turunan yang selalu dibangun ulang dari ledger (`workflow board --write`).
-   Hapus pun tidak masalah.
-6. **Closing ditahan dependency.** Kalau proyek A mau ditutup tapi proyek B
-   masih menunggu hasilnya, sistem menahan (`exit code 3`) sampai owner
-   merekonsiliasi — `--override` hanya bisa owner.
-7. **Memori lintas sesi lewat Dreaming.** Ledger = memori *episodik*.
-   `workflow dream run` mengkonsolidasikannya (bersama journal penolakan)
-   menjadi **proposal memori** tanpa mengubah input; owner meninjau lalu
-   `workflow dream promote` ke memori aktif yang dibaca agen di awal sesi —
-   pola *Memory & Dreaming* / Karpathy wiki yang dijelaskan di `docs/DREAM.md`.
+> Platform A says the page is live. Platform B, two days later, rebuilds that same page —
+> it never knew the work was done. Platform C logs another division's work as its own,
+> because it was only "helping".
 
-## Instalasi
+**ai-workflow-os is the single source of truth they all have to agree on.** Agents may claim
+anything in chat. Nothing enters the official record except through one validated CLI — and
+"done" is only ever accepted with **evidence** and **verification** attached.
 
-Tidak ada dependency eksternal — stdlib Python (>=3.9) + git.
+---
 
-```bash
-# symlink supaya perintah `workflow` tersedia di PATH:
-bash install.sh            # memasang ke /usr/local/bin
-# atau biarkan apa adanya dan panggil ./workflow dari dalam folder nevgo
+## 🎯 The shape of the fix
+
+```
+ EVERY PLATFORM                                   ONE TRUSTED SYSTEM
+┌───────────┐   ┌───────────┐   ┌───────────┐    ┌──────────────────────┐
+│ Claude    │   │ ChatGPT   │   │ Gemini    │    │   workflow (CLI)     │
+│ platform A│   │ platform B│   │ platform C│───▶│   the ONLY writer    │
+└───────────┘   └───────────┘   └───────────┘    └──────────┬───────────┘
+                   ⋮ and more                                  │ validates
+                                                            ┌──▼───────────┐
+                                                            │  append-only │
+                                                            │  ledger/div  │  → git
+                                                            └──────────────┘
 ```
 
-Struktur setelah `workflow init`:
+Rules live in the **validator**, not in prompts. Prompts are advice; the validator is a rule
+that cannot be bargained with.
+
+### ⚡ Core guarantees
+
+| # | Guarantee | What happens in practice |
+|---|-----------|--------------------------|
+| 1 | **One write path** | No status ever enters a ledger except through `workflow submit`. |
+| 2 | **Division = your folder** | Ownership comes from the *working directory*, never from what a model *claims* in chat. |
+| 3 | **Validators reject, they don't warn** | Empty `--evidence` or `--verification` on `SELESAI` → **exit 2, zero bytes written**. |
+| 4 | **Append-only, tamper-evident** | Each ledger line is chained to the previous one by SHA-256 (`seq`, `prev`) and tracked in git. |
+| 5 | **Dependencies hold the door** | A project can't close while something it depends on is still open — unless *you* (owner) override it. |
+| 6 | **Cross-session memory (`dream`)** | Session logs are consolidated out-of-band into a reviewed memory store every agent reads on startup. |
+
+---
+
+## 🛣️ State machine — five pure states, no "almost done"
+
+```
+  IDE            DISIAPKAN        SIAP-JALAN        BERJALAN         SELESAI
+ (idea)         (prepared)       (ready)           (in progress)    (done)
+   ───────────────▶ ───────────────▶ ───────────────▶ ───────────────▶
+```
+
+* `SELESAI` is the only transition under a hard lock: it must arrive from `SIAP-JALAN` or
+  `BERJALAN`, **and** carry concrete `--evidence` + `--verification`.
+* No "95% done". Nuance like *"done but needs a re-check"* is written as a free-form
+  **note**, never as a fake state.
+* Submitting the same state twice is a **no-op** — no duplicates, ever.
+* Leaving `SELESAI` requires `workflow reopen`, and that's owner-only.
+
+```bash
+# from inside ~/nevgo/divisions/website/
+$ workflow whoami
+divisi   : website
+
+$ workflow submit --project checkout-redesign --status SIAP-JALAN      # before starting
+$ workflow submit --project checkout-redesign --status SELESAI \
+      --evidence "url live: checkout.nevgo.id, screenshot attached" \
+      --verification "curl -I checkout.nevgo.id -> 200 OK, checked manually"
+```
+
+Try to claim `SELESAI` without proof and the validator will refuse — then **record the
+refusal as data** in `.workflow/rejections/`, so you can see which platform keeps making
+unsubstantiated claims.
+
+```
+$ workflow submit --project pindah-server --status SELESAI --actor platform-d
+✗ [verification] SELESAI requires --verification (how the claim was checked)
+DITOLAK — no bytes written to the ledger.  (exit code 2)
+```
+
+---
+
+## 💾 Memory & Dreaming — so sessions don't start from zero
+
+Five platforms, cold starts, institutional amnesia — solved the way Anthropic's
+*Memory & Dreaming* (the "Karpathy Wiki pattern") solves it. Your ledger is **episodic
+memory**. A `dream` run is the out-of-band consolidation job that compiles it.
+
+```
+   sessions write                      compile out-of-band                 read on startup
+┌──────────────────────┐   dream run   ┌──────────────────────────┐  promote   ┌──────────────┐
+│ .workflow/ledger/    │ ────────────▶ │ proposal (never mutates  │ ─────────▶ │ .workflow/   │
+│ .workflow/rejections │  4 phases     │ the input!)              │  (owner)   │ memory/      │
+└──────────────────────┘               └──────────────────────────┘            └──────────────┘
+```
+
+Four phases: **Orient → Gather recent signal → Consolidate → Prune & Index**. The proposal
+is a *candidate*, not a mutation — you review it, then promote or reject it.
+
+```bash
+$ workflow dream run                        # proposal: STATE, PROJECTS, LESSONS, DECISIONS, ...
+$ workflow dream review latest
+$ workflow dream promote latest --actor owner    # → live memory
+$ workflow dream index                           # what agents read at session start
+```
+
+A promoted memory might tell your next agent: *"platform-a was rejected twice for closing
+projects with open dependencies — check `workflow depend list` before claiming done"* or
+*"owner already accepted launch-page with risk on 2026-09-04 — don't re-litigate it."*
+
+> 📖 Full story: [`docs/DREAM.md`](docs/DREAM.md) · Design narrative (Indonesian):
+> [`NEVGO_WORKFLOW_PRACTICAL.md`](NEVGO_WORKFLOW_PRACTICAL.md)
+
+---
+
+## 🚀 Quickstart
+
+Zero external dependencies — Python ≥ 3.9 standard library + `git`.
+
+```bash
+git clone https://github.com/bangnevgo/ai-workflow-os.git ~/nevgo
+cd ~/nevgo
+
+./workflow init                      # config, 6 division folders, git repo (once)
+cd divisions/website                 # ← division is decided by this folder
+./workflow states                    # show the rules agents must follow
+./workflow submit --project landing-v2 --status DISIAPKAN
+./workflow board --write             # rebuild the BOARD.md summary from the ledgers
+```
+
+Replay a full multi-platform demo (scenario straight from the design document):
+
+```bash
+bash tools/seed_demo.sh              # 24 steps: rejects, holds, override, dream, ...
+```
+
+---
+
+## 🗂️ Repository layout
 
 ```
 ~/nevgo/
-├── workflow                 ← CLI (satu jalur tulis)
-├── config.json              ← divisi, state machine, policy (bisa diedit owner)
-├── BOARD.md                 ← view turunan — JANGAN diedit manual
+├── workflow                # the CLI — the ONLY write path
+├── config.json             # divisions, owner actors, policy (owner-editable)
+├── BOARD.md                # derived view — always rebuildable from the ledgers
 ├── divisions/
 │   ├── konten/  marketing/  operasional/
-│   ├── penjualan/  keuangan/  website/
+│   └── penjualan/  keuangan/  website/
 ├── .workflow/
-│   ├── ledger/*.jsonl        ← ledger append-only per divisi (sumber kebenaran)
-│   ├── rejections/*.jsonl    ← journal penolakan validator (data terpisah)
-│   └── locks/                ← kunci tulis (anti-race antar platform)
-└── docs/  tools/  tests/
+│   ├── ledger/*.jsonl       # append-only, hash-chained source of truth
+│   ├── rejections/*.jsonl   # validator refusals, stored as data
+│   ├── dreams/              # proposals, live memory, dream journal
+│   └── locks/               # inter-process write locks
+├── docs/                    # agent contract, gap analysis, dream, deploy guide
+├── tools/                   # demo seed + GitHub deploy helper
+└── tests/                   # 37 automated checks (bash harness)
 ```
 
-## Quickstart
+---
 
-```bash
-workflow init                       # sekali saja; buat config + folder + git
-cd divisions/website                # divisi = dari FOLDER ini
+## ⌨️ Command cheatsheet
 
-workflow whoami                     # → divisi: website
+| Command | Purpose |
+|---------|---------|
+| `workflow init / whoami / states` | bootstrap · check your division from the folder · show the rules |
+| `workflow submit` | **record a state transition** (the write path) |
+| `workflow note` | free-form note — never touches state |
+| `workflow status / log` | last state per project · raw append-only ledger |
+| `workflow depend add/remove/list` | declare dependencies → **hold closing** until satisfied |
+| `workflow reopen` | 🔒 owner: move `SELESAI` → `BERJALAN` (with a reason) |
+| `workflow rejections` | read the validator's refusal journal |
+| `workflow board --write` | rebuild the derived BOARD from the ledgers |
+| `workflow dream run/list/review/promote/reject/index/journal` | Memory & Dreaming lifecycle (promote/reject = 🔒 owner) |
+| `workflow verify` | check hash-chain + head-pointer integrity of every store |
+| `workflow commit` | commit ledgers + BOARD to git |
+| `workflow wipe` | 🔒 owner: start clean |
 
-# status awal sebuah proyek
-workflow submit --project redesign-checkout --status DISIAPKAN
+🔒 = owner-only. Owner actors live in `config.json` (`owner_actors`, default `["owner"]`);
+agents identify themselves with `--actor <name>` or `NEVGO_ACTOR`.
 
-# SIAP-JALAN sebelum mulai kerja (boleh tanpa evidence — status longgar)
-workflow submit --project redesign-checkout --status SIAP-JALAN
+**Exit codes for automation** — 0 = OK/no-op · 1 = system error · 2 = rejected by validator ·
+3 = closing held by an open dependency.
 
-# SELESAI: wajib evidence + verification, kalau tidak → DITOLAK (exit 2)
-workflow submit --project redesign-checkout --status SELESAI \
-    --evidence "url live: checkout.nevgo.id, screenshot terlampir" \
-    --verification "curl -I checkout.nevgo.id -> 200 OK, dicek manual"
+---
 
-workflow status                      # lihat status tiap proyek
-workflow board --write               # regenerasi BOARD.md (view turunan)
-```
+## 🧠 Design decisions that make it trustworthy
 
-## Perintah
+- **Ledger = source of truth; BOARD = a view.** Crash the backend and you rebuild the BOARD
+  from the ledgers. Corrupt a ledger and `git checkout` brings it back — history is versioned.
+- **`cc` ≠ execute.** Cross-division help is *recorded* as `--cc DIV:project` but triggers
+  nothing. Activation stays manual, with the owner.
+- **One writer, always.** Hash-chained lines + per-division file locks mean five platforms can
+  write *simultaneously* without lost or duplicated entries.
+- **Prompt is advice; validator is law.** Rules are enforced in code paths, so their
+  enforcement doesn't depend on how obedient a given model happens to be.
+- **Division from the filesystem.** An agent spawned in `divisions/website/` *is* Website —
+  the claim can't be forged in a chat message.
 
-| Perintah | Fungsi |
-|---|---|
-| `workflow init` | buat struktur, `config.json`, folder divisi, repo git |
-| `workflow whoami` | divisi apa yang ditentukan cwd (cek sebelum submit) |
-| `workflow states` | tampilkan state machine + aturan |
-| `workflow submit` | catat transisi status — **jalur tulis utama** |
-| `workflow note` | catatan bebas (tidak mengubah status) |
-| `workflow status [--division X] [--json]` | status terakhir semua proyek |
-| `workflow log [--division X] [--project P]` | isi mentah ledger (append-only) |
-| `workflow rejections` | journal penolakan validator |
-| `workflow depend add/remove/list` | kelola dependency antar proyek/divisi |
-| `workflow reopen` | *khusus owner*: buka lagi dari SELESAI → BERJALAN |
-| `workflow board [--write]` | tampilkan / tulis `BOARD.md` |
-| `workflow verify` | cek integritas hash-chain seluruh store |
-| `workflow commit` | commit ledger + BOARD ke git |
-| `workflow wipe` | *khusus owner*: mulai bersih (menghapus data) |
-| `workflow dream run` | buat **proposal** memori dari ledger + rejections (input tak diubah) |
-| `workflow dream list` / `review` | daftar / ringkas proposal |
-| `workflow dream promote` | *khusus owner*: promosikan proposal → memori aktif |
-| `workflow dream reject` | *khusus owner*: tolak proposal (butuh `--reason`) |
-| `workflow dream index` | tampilkan INDEX memori aktif (baca di awal sesi agen) |
-| `workflow dream journal` | riwayat run/promote/reject |
-| `workflow dream clear` | *khusus owner*: hapus proposal & memori (journal tetap) |
+> Agent-facing contract to paste into any platform's system prompt:
+> [`docs/RULES_FOR_AGENTS.md`](docs/RULES_FOR_AGENTS.md) · honest limits & gaps:
+> [`docs/GAP-MANUAL.md`](docs/GAP-MANUAL.md)
 
-**Exit codes untuk otomasi:** `0` OK / no-op, `2` ditolak validator,
-`3` ditahan dependency, `1` error sistem.
+---
 
-**Aktor** diisi lewat `--actor` atau env `NEVGO_ACTOR` (default `manual`).
-Contoh: `NEVGO_ACTOR=claude-workflow-divisi ./workflow submit ...`.
-Nama di `owner_actors` (default: `owner`) = satu-satunya yang boleh
-`--override`, `reopen`, `depend remove`, `wipe`.
+## 🧭 Status & roadmap
 
-## Anti-duplikat & idempotensi
+- ✅ v0.1 prototype running with demo data, seed replay, and **37 passing tests**
+- ✅ Multi-platform-safe writes (locks, dedupe no-ops, hash chains)
+- ✅ Validator refusals recorded as data (closes a gap from the design doc)
+- ✅ Memory & Dreaming (cross-session, review-gated)
+- ◻️ Work-quality evaluation (not just "recorded correctly") — still the human's job
+- ◻️ Scheduled `dream run` (e.g. nightly via cron), platform integration wrappers
 
-Submit status yang sama dua kali = *no-op* (tidak ada baris ditulis).
-Ledger dirantai `seq` + hash `prev`, dengan kunci tulis antar-proses, jadi
-dua platform yang menulis bersamaan tidak saling menabrak atau menduplikat.
+---
 
-## Meniru desain ini
+## 📜 License
 
-Reproduksi dari `workflow` source: validasi di `validate_submit()`, tulis di
-`append_entry()` (satu-satunya fungsi yang menyentuh store), tampilan di
-`generate_board()`. Alur lengkap langkah-demi-langkah ada di
-`NEVGO_WORKFLOW_PRACTICAL.md` (bagian "Cara Meniru Setup Ini").
+Internal/personal prototype — design narrative and implementation decisions are documented
+in this repository for replication. See [NEVGO_WORKFLOW_PRACTICAL.md](NEVGO_WORKFLOW_PRACTICAL.md)
+for the "how to copy this setup" playbook.
 
-## Roadmap / gap yang masih terbuka
-
-| Di dokumen | Status di prototipe |
-|---|---|
-| Penolakan cuma muncul di terminal | ✔ sekarang tercatat di `.workflow/rejections/` |
-| Aktivasi lintas divisi tetap manual | ✔ `--cc` dicatat, tidak mengeksekusi apa pun |
-| Evaluasi kualitas kerja (bukan sekadar "tercatat benar") | ○ masih backlog |
-
-Lihat `docs/GAP-MANUAL.md` untuk penjelasan tambahan, dan `docs/RULES_FOR_AGENTS.md`
-untuk kontrak singkat yang bisa ditempel ke prompt/platform AI mana pun.
+<p align="center"><sub>Made to stop trusting "it's done" — and start being able to check.</sub></p>
