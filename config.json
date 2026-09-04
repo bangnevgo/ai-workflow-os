@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "root_label": "NEVGO",
+  "owner_actors": [
+    "owner"
+  ],
+  "divisions": {
+    "konten": {
+      "dir": "divisions/konten",
+      "label": "Konten"
+    },
+    "marketing": {
+      "dir": "divisions/marketing",
+      "label": "Marketing"
+    },
+    "operasional": {
+      "dir": "divisions/operasional",
+      "label": "Operasional"
+    },
+    "penjualan": {
+      "dir": "divisions/penjualan",
+      "label": "Penjualan"
+    },
+    "keuangan": {
+      "dir": "divisions/keuangan",
+      "label": "Keuangan"
+    },
+    "website": {
+      "dir": "divisions/website",
+      "label": "Website"
+    }
+  },
+  "states": [
+    "IDE",
+    "DISIAPKAN",
+    "SIAP-JALAN",
+    "BERJALAN",
+    "SELESAI"
+  ],
+  "policy": {
+    "evidence_min_len": 3,
+    "verification_min_len": 3,
+    "require_evidence_for": [
+      "SELESAI"
+    ],
+    "require_verification_for": [
+      "SELESAI"
+    ],
+    "selesai_min_from": [
+      "SIAP-JALAN",
+      "BERJALAN"
+    ],
+    "dep_hold_policy": "any",
+    "max_cc": 5
+  }
+}
