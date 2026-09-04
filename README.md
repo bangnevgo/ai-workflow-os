@@ -243,8 +243,10 @@ agents identify themselves with `--actor <name>` or `NEVGO_ACTOR`.
 
 ## 📜 License
 
-Internal/personal prototype — design narrative and implementation decisions are documented
-in this repository for replication. See [NEVGO_WORKFLOW_PRACTICAL.md](NEVGO_WORKFLOW_PRACTICAL.md)
+MIT — see [LICENSE](LICENSE). Free to use, modify, and build upon.
+
+The design narrative and implementation decisions are documented in this
+repository for replication. See [NEVGO_WORKFLOW_PRACTICAL.md](NEVGO_WORKFLOW_PRACTICAL.md)
 for the "how to copy this setup" playbook.
 
 <p align="center"><sub>Made to stop trusting "it's done" — and start being able to check.</sub></p>
