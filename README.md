@@ -31,6 +31,12 @@ what happened.
 anything in chat. Nothing enters the official record except through one validated CLI — and
 "done" is only ever accepted with **evidence** and **verification** attached.
 
+<p align="center">
+  <img src="demo.gif" alt="ai-workflow-os demo — claiming done without proof is rejected, refusals are recorded as data" width="92%"/>
+  <br/>
+  <sub><i>Claiming "done" without proof → <b>rejected</b> (not warned). The refusal itself is recorded as data.</i></sub>
+</p>
+
 ---
 
 ## 🎯 The shape of the fix
