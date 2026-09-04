@@ -11,7 +11,7 @@ Cara mem-push prototipe `nevgo-workflow` (folder `~/nevgo`) ke GitHub.
 ## 1. Buat repo di github.com (sekali saja)
 
 1. Buka **https://github.com/new**
-2. **Repository name:** `ai-workflow-ledger`
+2. **Repository name:** `ai-workflow-os`
    *(nama umum & generik; alternatif: `multi-agent-workflow`, `agent-workflow-ledger`)*
 3. Pilih **Public**
 4. **Jangan centang** "Add a README / .gitignore / license" — repo harus kosong
@@ -33,7 +33,7 @@ gh auth login              # ikuti wizard (HTTPS + browser)
 **Opsi B — Personal Access Token** (bisa dipakai tanpa `gh`):
 1. github.com → Settings → **Developer settings → Personal access tokens →
    Fine-grained tokens → Generate new token**
-2. Repository access: **Only select repositories** → pilih `ai-workflow-ledger`
+2. Repository access: **Only select repositories** → pilih `ai-workflow-os`
 3. Permissions → **Contents: Read and write**
 4. Salin token (format `github_pat_…`). Token ini *hanya* untuk sekali push —
    langsung cabut/expire setelah selesai.
@@ -44,10 +44,10 @@ gh auth login              # ikuti wizard (HTTPS + browser)
 cd ~/nevgo
 
 # --- kalau pakai gh CLI ---
-./tools/github_deploy.sh --gh ai-workflow-ledger
+./tools/github_deploy.sh --gh ai-workflow-os
 
 # --- kalau pakai token ---
-GITHUB_TOKEN=github_pat_xxx ./tools/github_deploy.sh https://github.com/<USERNAME>/ai-workflow-ledger.git
+GITHUB_TOKEN=github_pat_xxx ./tools/github_deploy.sh https://github.com/bangnevgo/ai-workflow-os.git
 ```
 
 Skrip akan: cek working tree bersih → tambah remote `origin` (URL bersih,
